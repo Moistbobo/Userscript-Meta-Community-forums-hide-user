@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Meta Community Forums — Hide posts by user
 // @namespace    https://github.com/userscript-meta-forums-hide-post-from-user
-// @version      0.3.0
+// @version      0.3.1
 // @description  Hide posts from users on your blocklist on communityforums.atmeta.com
 // @match        https://communityforums.atmeta.com/*
 // @run-at       document-idle
@@ -17,6 +17,7 @@
   const STORAGE_KEY = 'mfHideUsers.blocklist';
   const ATTR_HIDDEN = 'data-mf-hidden-user';
   const ATTR_MENU_AUGMENTED = 'data-mf-menu-augmented';
+  const TOAST_CONTAINER_ID = 'mf-hide-users-toasts';
   const PROFILE_PATH_RE = /^\/users\/([^/]+)\/(\d+)\/?$/;
 
   /** @type {{ login: string, id: string } | null} */
@@ -31,8 +32,49 @@
     if (document.getElementById(id)) return;
     const el = document.createElement('style');
     el.id = id;
-    el.textContent = '[' + ATTR_HIDDEN + '="1"]{display:none!important;}';
+    el.textContent =
+      '[' +
+      ATTR_HIDDEN +
+      '="1"]{display:none!important;}' +
+      '#' +
+      TOAST_CONTAINER_ID +
+      '{position:fixed;bottom:20px;right:20px;z-index:2147483647;display:flex;flex-direction:column;gap:8px;pointer-events:none;max-width:min(420px,calc(100vw - 40px));}' +
+      '.mf-toast{pointer-events:auto;padding:10px 14px;border-radius:8px;font:14px/1.4 system-ui,-apple-system,sans-serif;box-shadow:0 4px 12px rgba(0,0,0,.18);opacity:0;transform:translateY(8px);transition:opacity .2s ease,transform .2s ease;word-wrap:break-word;}' +
+      '.mf-toast.mf-toast--visible{opacity:1;transform:translateY(0);}' +
+      '.mf-toast--success{background:#1b5e20;color:#fff;}' +
+      '.mf-toast--error{background:#b71c1c;color:#fff;}' +
+      '.mf-toast--info{background:#37474f;color:#fff;}';
     document.documentElement.appendChild(el);
+  }
+
+  /** @param {'success'|'error'|'info'} [kind] */
+  function showToast(message, kind) {
+    injectStyle();
+    var k = kind || 'info';
+    var root = document.getElementById(TOAST_CONTAINER_ID);
+    if (!root) {
+      root = document.createElement('div');
+      root.id = TOAST_CONTAINER_ID;
+      root.setAttribute('aria-live', 'polite');
+      document.documentElement.appendChild(root);
+    }
+    var el = document.createElement('div');
+    el.className = 'mf-toast mf-toast--' + k;
+    el.setAttribute('role', 'status');
+    el.textContent = message;
+    root.appendChild(el);
+    requestAnimationFrame(function () {
+      el.classList.add('mf-toast--visible');
+    });
+    var dismissMs = k === 'error' ? 5500 : 4000;
+    setTimeout(function () {
+      el.classList.remove('mf-toast--visible');
+      var done = function () {
+        if (el.parentNode) el.parentNode.removeChild(el);
+      };
+      el.addEventListener('transitionend', done, { once: true });
+      setTimeout(done, 300);
+    }, dismissMs);
   }
 
   function normalizeEntry(e) {
@@ -324,14 +366,17 @@
     if (input == null) return;
     var entry = parseBlocklistInput(input);
     if (!entry) {
-      window.alert('Could not parse input. Use a profile URL, /users/login/id, digits only, or a login name.');
+      showToast(
+        'Could not parse input. Use a profile URL, /users/login/id, digits only, or a login name.',
+        'error',
+      );
       return;
     }
     var bl = loadBlocklist();
     bl.blocked.push(entry);
     saveBlocklist(bl);
     scheduleApply();
-    window.alert('Updated blocklist.');
+    showToast('Updated blocklist.', 'success');
   }
 
   function promptRemove() {
@@ -341,11 +386,11 @@
     if (input == null) return;
     var entry = parseBlocklistInput(input);
     if (!entry) {
-      window.alert('Could not parse input.');
+      showToast('Could not parse input.', 'error');
       return;
     }
     removeEntriesMatching(entry);
-    window.alert('Updated blocklist.');
+    showToast('Updated blocklist.', 'success');
   }
 
   function showBlocklistJson() {
@@ -367,19 +412,22 @@
       }
       saveBlocklist({ blocked: blocked });
       scheduleApply();
-      window.alert('Blocklist imported.');
+      showToast('Blocklist imported.', 'success');
     } catch (e) {
-      window.alert('Invalid JSON.');
+      showToast('Invalid JSON.', 'error');
     }
   }
 
   function blockLastClicked() {
     if (!lastClickedProfile) {
-      window.alert('No profile link clicked yet in this tab. Click a username/avatar on a post first.');
+      showToast(
+        'No profile link clicked yet in this tab. Click a username/avatar on a post first.',
+        'error',
+      );
       return;
     }
     mergeParsedIntoBlocklist(lastClickedProfile);
-    window.alert('Blocked: ' + lastClickedProfile.login + ' (' + lastClickedProfile.id + ')');
+    showToast('Blocked: ' + lastClickedProfile.login + ' (' + lastClickedProfile.id + ')', 'success');
   }
 
   GM_registerMenuCommand('MF: Add to blocklist…', promptAdd);
@@ -401,15 +449,15 @@
       ev.stopPropagation();
       var parsed = getAuthorFromMessageMenu(menu);
       if (!parsed) {
-        window.alert('Could not resolve author for this post.');
+        showToast('Could not resolve author for this post.', 'error');
         return;
       }
       if (isBlocked(parsed.login, parsed.id)) {
-        window.alert(parsed.login + ' is already on your blocklist.');
+        showToast(parsed.login + ' is already on your blocklist.', 'info');
         return;
       }
       mergeParsedIntoBlocklist(parsed);
-      window.alert('Blocked: ' + parsed.login);
+      showToast('Blocked: ' + parsed.login, 'success');
     },
     true,
   );
