@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Meta Community Forums — Hide posts by user
 // @namespace    https://github.com/userscript-meta-forums-hide-post-from-user
-// @version      0.1.0
+// @version      0.3.0
 // @description  Hide posts from users on your blocklist on communityforums.atmeta.com
 // @match        https://communityforums.atmeta.com/*
 // @run-at       document-idle
@@ -16,13 +16,14 @@
   const DEBUG = false;
   const STORAGE_KEY = 'mfHideUsers.blocklist';
   const ATTR_HIDDEN = 'data-mf-hidden-user';
+  const ATTR_MENU_AUGMENTED = 'data-mf-menu-augmented';
   const PROFILE_PATH_RE = /^\/users\/([^/]+)\/(\d+)\/?$/;
 
   /** @type {{ login: string, id: string } | null} */
   let lastClickedProfile = null;
 
-  function log(...args) {
-    if (DEBUG) console.log('[mf-hide-users]', ...args);
+  function log() {
+    if (DEBUG) console.log.apply(console, ['[mf-hide-users]'].concat([].slice.call(arguments)));
   }
 
   function injectStyle() {
@@ -34,29 +35,79 @@
     document.documentElement.appendChild(el);
   }
 
+  function normalizeEntry(e) {
+    return {
+      id: e && e.id != null ? String(e.id) : '',
+      login: e && e.login != null ? String(e.login).toLowerCase() : '',
+    };
+  }
+
+  function dedupeBlocked(blocked) {
+    const merged = [];
+    blocked.forEach(function (entry) {
+      const id = String(entry.id || '');
+      const login = String(entry.login || '').toLowerCase();
+      let ix = -1;
+      for (let i = 0; i < merged.length; i++) {
+        const m = merged[i];
+        if (id && m.id === id) {
+          ix = i;
+          break;
+        }
+        if (login && m.login === login) {
+          ix = i;
+          break;
+        }
+      }
+      if (ix === -1) {
+        merged.push({ id: id, login: login });
+        return;
+      }
+      const m = merged[ix];
+      if (!m.id && id) m.id = id;
+      if (!m.login && login) m.login = login;
+    });
+    return merged;
+  }
+
+  function migrateLegacyToBlocked(data) {
+    const blocked = [];
+    if (Array.isArray(data.userIds)) {
+      data.userIds.forEach(function (id) {
+        blocked.push({ id: String(id), login: '' });
+      });
+    }
+    if (Array.isArray(data.logins)) {
+      data.logins.forEach(function (login) {
+        blocked.push({ id: '', login: String(login).toLowerCase() });
+      });
+    }
+    return dedupeBlocked(blocked);
+  }
+
   function loadBlocklist() {
     try {
       const raw = GM_getValue(STORAGE_KEY, null);
       if (raw == null || raw === '') {
-        return { userIds: [], logins: [] };
+        return { blocked: [] };
       }
-      const data = typeof raw === 'string' ? JSON.parse(raw) : raw;
-      return {
-        userIds: Array.isArray(data.userIds) ? data.userIds.map(String) : [],
-        logins: Array.isArray(data.logins)
-          ? data.logins.map(String).map((s) => s.toLowerCase())
-          : [],
-      };
+      const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+      if (Array.isArray(parsed.blocked)) {
+        return { blocked: dedupeBlocked(parsed.blocked.map(normalizeEntry)) };
+      }
+      if (Array.isArray(parsed.userIds) || Array.isArray(parsed.logins)) {
+        return { blocked: migrateLegacyToBlocked(parsed) };
+      }
+      return { blocked: [] };
     } catch (e) {
       log('loadBlocklist failed', e);
-      return { userIds: [], logins: [] };
+      return { blocked: [] };
     }
   }
 
   function saveBlocklist(bl) {
-    const userIds = Array.from(new Set(bl.userIds.map(String)));
-    const logins = Array.from(new Set(bl.logins.map(String).map(function (s) { return s.toLowerCase(); })));
-    GM_setValue(STORAGE_KEY, JSON.stringify({ userIds: userIds, logins: logins }));
+    const blocked = dedupeBlocked(bl.blocked.map(normalizeEntry));
+    GM_setValue(STORAGE_KEY, JSON.stringify({ blocked: blocked }));
   }
 
   function parseProfileFromHref(hrefOrUrl) {
@@ -80,22 +131,25 @@
     if (!s) return null;
     var fromHref = parseProfileFromHref(s);
     if (fromHref) {
-      return { userIds: [fromHref.id], logins: [fromHref.login.toLowerCase()] };
+      return { id: String(fromHref.id), login: String(fromHref.login).toLowerCase() };
     }
     if (/^\d+$/.test(s)) {
-      return { userIds: [s], logins: [] };
+      return { id: s, login: '' };
     }
     if (/^[A-Za-z0-9._-]+$/.test(s)) {
-      return { userIds: [], logins: [s.toLowerCase()] };
+      return { id: '', login: s.toLowerCase() };
     }
     return null;
   }
 
   function isBlocked(login, id) {
-    var bl = loadBlocklist();
-    if (bl.userIds.indexOf(String(id)) !== -1) return true;
-    if (login && bl.logins.indexOf(String(login).toLowerCase()) !== -1) return true;
-    return false;
+    var lid = String(id);
+    var llogin = login ? String(login).toLowerCase() : '';
+    return loadBlocklist().blocked.some(function (e) {
+      if (e.id && String(e.id) === lid) return true;
+      if (llogin && e.login && String(e.login).toLowerCase() === llogin) return true;
+      return false;
+    });
   }
 
   function isProfileUserLink(a) {
@@ -135,6 +189,74 @@
     return document.querySelector('main#main-content');
   }
 
+  function mergeParsedIntoBlocklist(parsed) {
+    var bl = loadBlocklist();
+    bl.blocked.push({
+      id: String(parsed.id),
+      login: String(parsed.login).toLowerCase(),
+    });
+    saveBlocklist(bl);
+    scheduleApply();
+  }
+
+  function removeEntriesMatching(criteria) {
+    var id = String(criteria.id || '');
+    var login = String(criteria.login || '').toLowerCase();
+    var bl = loadBlocklist();
+    bl.blocked = bl.blocked.filter(function (e) {
+      if (id && String(e.id) === id) return false;
+      if (login && String(e.login).toLowerCase() === login) return false;
+      return true;
+    });
+    saveBlocklist(bl);
+    scheduleApply();
+  }
+
+  function getAuthorFromMessageMenu(menuItem) {
+    var article = menuItem.closest('article[data-testid="StandardMessageView"]');
+    if (!article) return null;
+    var link = getCanonicalAuthorLink(article);
+    if (!link) return null;
+    return parseProfileFromHref(link.getAttribute('href') || '');
+  }
+
+  function augmentMessageActionMenu(menu) {
+    if (!(menu instanceof HTMLElement)) return;
+    if (menu.getAttribute('data-testid') !== 'MessageActionMenu.item') return;
+    if (menu.hasAttribute(ATTR_MENU_AUGMENTED)) return;
+    var main = getMain();
+    if (!main || !main.contains(menu)) return;
+    if (!getAuthorFromMessageMenu(menu)) return;
+    menu.setAttribute(ATTR_MENU_AUGMENTED, 'true');
+    var sample =
+      menu.querySelector('a[role="button"]') ||
+      menu.querySelector('a[class*="dropdown-item"]') ||
+      menu.querySelector('a');
+    var itemClass = sample ? sample.className : '';
+    var divider = menu.querySelector('[role="separator"]');
+    var divEl = divider ? divider.cloneNode(false) : document.createElement('div');
+    if (!divider) {
+      divEl.setAttribute('role', 'separator');
+      divEl.className = 'styles_dropdown-divider__nF3c9';
+    }
+    var a = document.createElement('a');
+    a.setAttribute('href', '#');
+    a.setAttribute('role', 'button');
+    if (itemClass) a.className = itemClass;
+    a.setAttribute('data-mf-action', 'block-author');
+    a.textContent = 'Block this user';
+    menu.appendChild(divEl);
+    menu.appendChild(a);
+  }
+
+  function augmentMessageActionMenusInMain() {
+    var main = getMain();
+    if (!main) return;
+    main.querySelectorAll('div[data-testid="MessageActionMenu.item"]').forEach(function (m) {
+      augmentMessageActionMenu(m);
+    });
+  }
+
   function applyHiding() {
     injectStyle();
     var main = getMain();
@@ -157,6 +279,8 @@
       var root = getHideRoot(article);
       root.setAttribute(ATTR_HIDDEN, '1');
     });
+
+    augmentMessageActionMenusInMain();
   }
 
   var scheduled = null;
@@ -198,14 +322,13 @@
       'Block user: paste profile URL or /users/login/id, numeric user id only, or login name:',
     );
     if (input == null) return;
-    var parsed = parseBlocklistInput(input);
-    if (!parsed) {
+    var entry = parseBlocklistInput(input);
+    if (!entry) {
       window.alert('Could not parse input. Use a profile URL, /users/login/id, digits only, or a login name.');
       return;
     }
     var bl = loadBlocklist();
-    (parsed.userIds || []).forEach(function (id) { bl.userIds.push(id); });
-    (parsed.logins || []).forEach(function (l) { bl.logins.push(l); });
+    bl.blocked.push(entry);
     saveBlocklist(bl);
     scheduleApply();
     window.alert('Updated blocklist.');
@@ -216,20 +339,12 @@
       'Unblock user: paste profile URL or /users/login/id, numeric user id only, or login name:',
     );
     if (input == null) return;
-    var parsed = parseBlocklistInput(input);
-    if (!parsed) {
+    var entry = parseBlocklistInput(input);
+    if (!entry) {
       window.alert('Could not parse input.');
       return;
     }
-    var bl = loadBlocklist();
-    var idSet = {};
-    (parsed.userIds || []).forEach(function (id) { idSet[id] = true; });
-    var loginSet = {};
-    (parsed.logins || []).forEach(function (l) { loginSet[String(l).toLowerCase()] = true; });
-    bl.userIds = bl.userIds.filter(function (id) { return !idSet[id]; });
-    bl.logins = bl.logins.filter(function (l) { return !loginSet[String(l).toLowerCase()]; });
-    saveBlocklist(bl);
-    scheduleApply();
+    removeEntriesMatching(entry);
     window.alert('Updated blocklist.');
   }
 
@@ -240,15 +355,17 @@
   }
 
   function importBlocklistJson() {
-    var input = window.prompt('Paste blocklist JSON { "userIds": [], "logins": [] }:');
+    var input = window.prompt('Paste blocklist JSON: { "blocked": [ { "id": "123", "login": "name" } ] }');
     if (input == null) return;
     try {
       var data = JSON.parse(input.trim());
-      var bl = {
-        userIds: Array.isArray(data.userIds) ? data.userIds.map(String) : [],
-        logins: Array.isArray(data.logins) ? data.logins.map(String) : [],
-      };
-      saveBlocklist(bl);
+      var blocked = [];
+      if (Array.isArray(data.blocked)) {
+        blocked = data.blocked.map(normalizeEntry);
+      } else if (Array.isArray(data.userIds) || Array.isArray(data.logins)) {
+        blocked = migrateLegacyToBlocked(data);
+      }
+      saveBlocklist({ blocked: blocked });
       scheduleApply();
       window.alert('Blocklist imported.');
     } catch (e) {
@@ -261,11 +378,7 @@
       window.alert('No profile link clicked yet in this tab. Click a username/avatar on a post first.');
       return;
     }
-    var bl = loadBlocklist();
-    bl.userIds.push(lastClickedProfile.id);
-    bl.logins.push(lastClickedProfile.login.toLowerCase());
-    saveBlocklist(bl);
-    scheduleApply();
+    mergeParsedIntoBlocklist(lastClickedProfile);
     window.alert('Blocked: ' + lastClickedProfile.login + ' (' + lastClickedProfile.id + ')');
   }
 
@@ -276,6 +389,30 @@
   GM_registerMenuCommand('MF: Import blocklist (JSON)…', importBlocklistJson);
 
   document.addEventListener('click', onDocumentClickCapture, true);
+
+  document.addEventListener(
+    'click',
+    function (ev) {
+      var t = ev.target && ev.target.closest && ev.target.closest('[data-mf-action="block-author"]');
+      if (!t || !(t instanceof HTMLElement)) return;
+      var menu = t.closest('div[data-testid="MessageActionMenu.item"]');
+      if (!menu) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      var parsed = getAuthorFromMessageMenu(menu);
+      if (!parsed) {
+        window.alert('Could not resolve author for this post.');
+        return;
+      }
+      if (isBlocked(parsed.login, parsed.id)) {
+        window.alert(parsed.login + ' is already on your blocklist.');
+        return;
+      }
+      mergeParsedIntoBlocklist(parsed);
+      window.alert('Blocked: ' + parsed.login);
+    },
+    true,
+  );
 
   var obs = new MutationObserver(function () {
     debouncedApply();
