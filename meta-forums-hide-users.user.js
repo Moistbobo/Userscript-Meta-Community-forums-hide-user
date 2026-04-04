@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Meta Community Forums — Hide posts by user
 // @namespace    https://github.com/userscript-meta-forums-hide-post-from-user
-// @version      0.3.1
-// @description  Hide posts from users on your blocklist on communityforums.atmeta.com
+// @version      1.0.0
+// @description  Hide posts from users on your hidden-users list on Meta Community forums
 // @match        https://communityforums.atmeta.com/*
 // @run-at       document-idle
 // @grant        GM_getValue
@@ -18,6 +18,9 @@
   const ATTR_HIDDEN = 'data-mf-hidden-user';
   const ATTR_MENU_AUGMENTED = 'data-mf-menu-augmented';
   const TOAST_CONTAINER_ID = 'mf-hide-users-toasts';
+  const PANEL_ROOT_ID = 'mf-hide-users-panel-root';
+  const PANEL_FAB_ID = 'mf-hide-users-fab';
+  const PANEL_OVERLAY_ID = 'mf-hide-users-overlay';
   const PROFILE_PATH_RE = /^\/users\/([^/]+)\/(\d+)\/?$/;
 
   /** @type {{ login: string, id: string } | null} */
@@ -43,7 +46,40 @@
       '.mf-toast.mf-toast--visible{opacity:1;transform:translateY(0);}' +
       '.mf-toast--success{background:#1b5e20;color:#fff;}' +
       '.mf-toast--error{background:#b71c1c;color:#fff;}' +
-      '.mf-toast--info{background:#37474f;color:#fff;}';
+      '.mf-toast--info{background:#37474f;color:#fff;}' +
+      '.mf-bl-overlay{position:fixed;inset:0;background:rgba(0,0,0,.25);z-index:2147483645;font:14px/1.4 system-ui,-apple-system,sans-serif;}' +
+      '.mf-bl-overlay[hidden]{display:none!important;}' +
+      '#' +
+      PANEL_ROOT_ID +
+      '{position:fixed;bottom:20px;right:20px;z-index:2147483646;display:flex;flex-direction:column;gap:10px;align-items:flex-end;font:14px/1.4 system-ui,-apple-system,sans-serif;}' +
+      '#' +
+      PANEL_FAB_ID +
+      '{pointer-events:auto;appearance:none;border:0;border-radius:999px;padding:10px 16px;font:inherit;font-weight:600;cursor:pointer;background:#1565c0;color:#fff;box-shadow:0 4px 12px rgba(0,0,0,.2);}' +
+      '#' +
+      PANEL_FAB_ID +
+      ':hover{background:#0d47a1;}' +
+      '#' +
+      PANEL_FAB_ID +
+      '[aria-expanded="true"]{background:#0d47a1;}' +
+      '.mf-bl-sheet{width:min(360px,calc(100vw - 40px));max-height:min(70vh,520px);display:flex;flex-direction:column;background:#fff;color:#212121;border-radius:12px;box-shadow:0 8px 32px rgba(0,0,0,.22);overflow:hidden;}' +
+      '.mf-bl-sheet[hidden]{display:none!important;}' +
+      '.mf-bl-head{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:12px 14px;border-bottom:1px solid #e0e0e0;background:#fafafa;}' +
+      '.mf-bl-head h2{margin:0;font-size:15px;font-weight:700;}' +
+      '.mf-bl-close{appearance:none;border:0;background:transparent;cursor:pointer;padding:4px 8px;border-radius:6px;font:inherit;color:#424242;}' +
+      '.mf-bl-close:hover{background:#eee;}' +
+      '.mf-bl-body{padding:12px 14px;overflow-y:auto;flex:1;min-height:0;}' +
+      '.mf-bl-add{display:flex;gap:8px;margin-bottom:12px;}' +
+      '.mf-bl-add input{flex:1;min-width:0;padding:8px 10px;border:1px solid #bdbdbd;border-radius:8px;font:inherit;}' +
+      '.mf-bl-add button{flex-shrink:0;padding:8px 12px;border:0;border-radius:8px;font:inherit;font-weight:600;cursor:pointer;background:#2e7d32;color:#fff;}' +
+      '.mf-bl-add button:hover{background:#1b5e20;}' +
+      '.mf-bl-empty{margin:8px 0;color:#616161;font-size:13px;}' +
+      '.mf-bl-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:8px;}' +
+      '.mf-bl-row{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;padding:10px 12px;border:1px solid #e0e0e0;border-radius:8px;background:#fafafa;}' +
+      '.mf-bl-meta{min-width:0;word-break:break-word;}' +
+      '.mf-bl-login{font-weight:600;}' +
+      '.mf-bl-id{font-size:12px;color:#616161;margin-top:2px;}' +
+      '.mf-bl-remove{flex-shrink:0;appearance:none;border:0;border-radius:8px;padding:6px 10px;font:inherit;font-weight:600;cursor:pointer;background:#c62828;color:#fff;}' +
+      '.mf-bl-remove:hover{background:#b71c1c;}';
     document.documentElement.appendChild(el);
   }
 
@@ -254,6 +290,15 @@
     scheduleApply();
   }
 
+  /** @param {number} index */
+  function removeBlockedAt(index) {
+    var bl = loadBlocklist();
+    if (!Array.isArray(bl.blocked) || index < 0 || index >= bl.blocked.length) return;
+    bl.blocked.splice(index, 1);
+    saveBlocklist(bl);
+    scheduleApply();
+  }
+
   function getAuthorFromMessageMenu(menuItem) {
     var article = menuItem.closest('article[data-testid="StandardMessageView"]');
     if (!article) return null;
@@ -285,8 +330,8 @@
     a.setAttribute('href', '#');
     a.setAttribute('role', 'button');
     if (itemClass) a.className = itemClass;
-    a.setAttribute('data-mf-action', 'block-author');
-    a.textContent = 'Block this user';
+    a.setAttribute('data-mf-action', 'hide-author');
+    a.textContent = 'Hide User';
     menu.appendChild(divEl);
     menu.appendChild(a);
   }
@@ -361,7 +406,7 @@
 
   function promptAdd() {
     var input = window.prompt(
-      'Block user: paste profile URL or /users/login/id, numeric user id only, or login name:',
+      'Hide user: paste profile URL or /users/login/id, numeric user id only, or login name:',
     );
     if (input == null) return;
     var entry = parseBlocklistInput(input);
@@ -376,12 +421,13 @@
     bl.blocked.push(entry);
     saveBlocklist(bl);
     scheduleApply();
-    showToast('Updated blocklist.', 'success');
+    renderBlocklistPanelBody();
+    showToast('Updated hidden users.', 'success');
   }
 
   function promptRemove() {
     var input = window.prompt(
-      'Unblock user: paste profile URL or /users/login/id, numeric user id only, or login name:',
+      'Stop hiding user: paste profile URL or /users/login/id, numeric user id only, or login name:',
     );
     if (input == null) return;
     var entry = parseBlocklistInput(input);
@@ -390,17 +436,20 @@
       return;
     }
     removeEntriesMatching(entry);
-    showToast('Updated blocklist.', 'success');
+    renderBlocklistPanelBody();
+    showToast('Updated hidden users.', 'success');
   }
 
   function showBlocklistJson() {
     var bl = loadBlocklist();
     var text = JSON.stringify(bl, null, 2);
-    window.prompt('Current blocklist (copy JSON):', text);
+    window.prompt('Current hidden users (copy JSON):', text);
   }
 
   function importBlocklistJson() {
-    var input = window.prompt('Paste blocklist JSON: { "blocked": [ { "id": "123", "login": "name" } ] }');
+    var input = window.prompt(
+      'Paste hidden-users JSON (same shape as export): { "blocked": [ { "id": "123", "login": "name" } ] }',
+    );
     if (input == null) return;
     try {
       var data = JSON.parse(input.trim());
@@ -412,13 +461,231 @@
       }
       saveBlocklist({ blocked: blocked });
       scheduleApply();
-      showToast('Blocklist imported.', 'success');
+      renderBlocklistPanelBody();
+      showToast('Hidden users list imported.', 'success');
     } catch (e) {
       showToast('Invalid JSON.', 'error');
     }
   }
 
-  function blockLastClicked() {
+  /** @type {{ open: boolean, onKey: (ev: KeyboardEvent) => void } | null} */
+  var blocklistPanelState = null;
+
+  function isBlocklistPanelOpen() {
+    return !!(blocklistPanelState && blocklistPanelState.open);
+  }
+
+  function closeBlocklistPanel() {
+    if (!blocklistPanelState || !blocklistPanelState.open) return;
+    var onKey = blocklistPanelState.onKey;
+    blocklistPanelState = null;
+    document.removeEventListener('keydown', onKey, true);
+    var overlay = document.getElementById(PANEL_OVERLAY_ID);
+    var root = document.getElementById(PANEL_ROOT_ID);
+    var sheet = root && root.querySelector('.mf-bl-sheet');
+    var fab = document.getElementById(PANEL_FAB_ID);
+    if (overlay) overlay.hidden = true;
+    if (sheet) sheet.hidden = true;
+    if (fab) {
+      fab.setAttribute('aria-expanded', 'false');
+      fab.focus();
+    }
+  }
+
+  function renderBlocklistPanelBody() {
+    var root = document.getElementById(PANEL_ROOT_ID);
+    if (!root) return;
+    var listEl = root.querySelector('.mf-bl-list');
+    var emptyEl = root.querySelector('.mf-bl-empty');
+    if (!listEl || !emptyEl) return;
+    var blocked = loadBlocklist().blocked;
+    listEl.innerHTML = '';
+    if (!blocked.length) {
+      emptyEl.hidden = false;
+      return;
+    }
+    emptyEl.hidden = true;
+    blocked.forEach(function (e, index) {
+      var li = document.createElement('li');
+      li.className = 'mf-bl-row';
+      var meta = document.createElement('div');
+      meta.className = 'mf-bl-meta';
+      var loginEl = document.createElement('div');
+      loginEl.className = 'mf-bl-login';
+      loginEl.textContent = e.login || '(unknown login)';
+      meta.appendChild(loginEl);
+      if (e.id) {
+        var idEl = document.createElement('div');
+        idEl.className = 'mf-bl-id';
+        idEl.textContent = 'User ID: ' + e.id;
+        meta.appendChild(idEl);
+      }
+      var rm = document.createElement('button');
+      rm.type = 'button';
+      rm.className = 'mf-bl-remove';
+      rm.setAttribute('data-mf-bl-remove', String(index));
+      rm.textContent = 'Unhide';
+      li.appendChild(meta);
+      li.appendChild(rm);
+      listEl.appendChild(li);
+    });
+  }
+
+  function openBlocklistPanel() {
+    ensureBlocklistPanelUi();
+    injectStyle();
+    var overlay = document.getElementById(PANEL_OVERLAY_ID);
+    var root = document.getElementById(PANEL_ROOT_ID);
+    if (!overlay || !root) return;
+    if (blocklistPanelState && blocklistPanelState.open) {
+      renderBlocklistPanelBody();
+      return;
+    }
+    var sheet = root.querySelector('.mf-bl-sheet');
+    var fab = document.getElementById(PANEL_FAB_ID);
+    overlay.hidden = false;
+    if (sheet) sheet.hidden = false;
+    if (fab) fab.setAttribute('aria-expanded', 'true');
+    var onKey = function (ev) {
+      if (ev.key === 'Escape') {
+        ev.preventDefault();
+        ev.stopPropagation();
+        closeBlocklistPanel();
+      }
+    };
+    blocklistPanelState = { open: true, onKey: onKey };
+    document.addEventListener('keydown', onKey, true);
+    renderBlocklistPanelBody();
+    var input = root.querySelector('.mf-bl-add input');
+    if (input instanceof HTMLInputElement) input.focus();
+  }
+
+  function toggleBlocklistPanel() {
+    if (isBlocklistPanelOpen()) closeBlocklistPanel();
+    else openBlocklistPanel();
+  }
+
+  function ensureBlocklistPanelUi() {
+    if (document.getElementById(PANEL_ROOT_ID)) return;
+    injectStyle();
+    var overlay = document.createElement('div');
+    overlay.id = PANEL_OVERLAY_ID;
+    overlay.className = 'mf-bl-overlay';
+    overlay.hidden = true;
+    overlay.addEventListener('click', function () {
+      closeBlocklistPanel();
+    });
+
+    var root = document.createElement('div');
+    root.id = PANEL_ROOT_ID;
+
+    var sheet = document.createElement('div');
+    sheet.id = 'mf-hide-users-sheet';
+    sheet.className = 'mf-bl-sheet';
+    sheet.hidden = true;
+
+    var head = document.createElement('div');
+    head.className = 'mf-bl-head';
+    var h2 = document.createElement('h2');
+    h2.id = 'mf-hide-users-panel-title';
+    h2.textContent = 'Hidden users';
+    var closeBtn = document.createElement('button');
+    closeBtn.type = 'button';
+    closeBtn.className = 'mf-bl-close';
+    closeBtn.setAttribute('aria-label', 'Close hidden users list');
+    closeBtn.textContent = '✕';
+    closeBtn.addEventListener('click', function () {
+      closeBlocklistPanel();
+    });
+    head.appendChild(h2);
+    head.appendChild(closeBtn);
+
+    var body = document.createElement('div');
+    body.className = 'mf-bl-body';
+
+    var addRow = document.createElement('div');
+    addRow.className = 'mf-bl-add';
+    var addInput = document.createElement('input');
+    addInput.type = 'text';
+    addInput.setAttribute('autocomplete', 'off');
+    addInput.setAttribute(
+      'placeholder',
+      'Profile URL, /users/login/id, id, or login…',
+    );
+    var addBtn = document.createElement('button');
+    addBtn.type = 'button';
+    addBtn.textContent = 'Hide';
+    function doAdd() {
+      var entry = parseBlocklistInput(addInput.value);
+      if (!entry) {
+        showToast(
+          'Could not parse input. Use a profile URL, /users/login/id, digits, or a login name.',
+          'error',
+        );
+        return;
+      }
+      var bl = loadBlocklist();
+      bl.blocked.push(entry);
+      saveBlocklist(bl);
+      scheduleApply();
+      addInput.value = '';
+      renderBlocklistPanelBody();
+      showToast('User is now hidden.', 'success');
+    }
+    addBtn.addEventListener('click', doAdd);
+    addInput.addEventListener('keydown', function (ev) {
+      if (ev.key === 'Enter') {
+        ev.preventDefault();
+        doAdd();
+      }
+    });
+    addRow.appendChild(addInput);
+    addRow.appendChild(addBtn);
+
+    var emptyEl = document.createElement('p');
+    emptyEl.className = 'mf-bl-empty';
+    emptyEl.textContent = 'No hidden users yet.';
+
+    var listEl = document.createElement('ul');
+    listEl.className = 'mf-bl-list';
+
+    body.appendChild(addRow);
+    body.appendChild(emptyEl);
+    body.appendChild(listEl);
+
+    sheet.appendChild(head);
+    sheet.appendChild(body);
+
+    var fab = document.createElement('button');
+    fab.id = PANEL_FAB_ID;
+    fab.type = 'button';
+    fab.textContent = 'Hidden users';
+    fab.setAttribute('aria-expanded', 'false');
+    fab.setAttribute('aria-controls', 'mf-hide-users-sheet');
+    fab.addEventListener('click', function (ev) {
+      ev.stopPropagation();
+      toggleBlocklistPanel();
+    });
+
+    root.appendChild(sheet);
+    root.appendChild(fab);
+
+    document.documentElement.appendChild(overlay);
+    document.documentElement.appendChild(root);
+
+    root.addEventListener('click', function (ev) {
+      ev.stopPropagation();
+      var t = ev.target && ev.target.closest && ev.target.closest('[data-mf-bl-remove]');
+      if (!(t instanceof HTMLButtonElement)) return;
+      var ix = parseInt(t.getAttribute('data-mf-bl-remove') || '', 10);
+      if (ix !== ix || ix < 0) return;
+      removeBlockedAt(ix);
+      renderBlocklistPanelBody();
+      showToast('User is no longer hidden.', 'success');
+    });
+  }
+
+  function hideLastClickedProfile() {
     if (!lastClickedProfile) {
       showToast(
         'No profile link clicked yet in this tab. Click a username/avatar on a post first.',
@@ -427,21 +694,25 @@
       return;
     }
     mergeParsedIntoBlocklist(lastClickedProfile);
-    showToast('Blocked: ' + lastClickedProfile.login + ' (' + lastClickedProfile.id + ')', 'success');
+    renderBlocklistPanelBody();
+    showToast('Hidden: ' + lastClickedProfile.login + ' (' + lastClickedProfile.id + ')', 'success');
   }
 
-  GM_registerMenuCommand('MF: Add to blocklist…', promptAdd);
-  GM_registerMenuCommand('MF: Remove from blocklist…', promptRemove);
-  GM_registerMenuCommand('MF: Block last-clicked profile', blockLastClicked);
-  GM_registerMenuCommand('MF: View blocklist (JSON)…', showBlocklistJson);
-  GM_registerMenuCommand('MF: Import blocklist (JSON)…', importBlocklistJson);
+  GM_registerMenuCommand('MF: Manage hidden users…', function () {
+    openBlocklistPanel();
+  });
+  GM_registerMenuCommand('MF: Hide user…', promptAdd);
+  GM_registerMenuCommand('MF: Stop hiding user…', promptRemove);
+  GM_registerMenuCommand('MF: Hide last-clicked profile', hideLastClickedProfile);
+  GM_registerMenuCommand('MF: View hidden users (JSON)…', showBlocklistJson);
+  GM_registerMenuCommand('MF: Import hidden users (JSON)…', importBlocklistJson);
 
   document.addEventListener('click', onDocumentClickCapture, true);
 
   document.addEventListener(
     'click',
     function (ev) {
-      var t = ev.target && ev.target.closest && ev.target.closest('[data-mf-action="block-author"]');
+      var t = ev.target && ev.target.closest && ev.target.closest('[data-mf-action="hide-author"]');
       if (!t || !(t instanceof HTMLElement)) return;
       var menu = t.closest('div[data-testid="MessageActionMenu.item"]');
       if (!menu) return;
@@ -453,11 +724,12 @@
         return;
       }
       if (isBlocked(parsed.login, parsed.id)) {
-        showToast(parsed.login + ' is already on your blocklist.', 'info');
+        showToast(parsed.login + ' is already hidden.', 'info');
         return;
       }
       mergeParsedIntoBlocklist(parsed);
-      showToast('Blocked: ' + parsed.login, 'success');
+      renderBlocklistPanelBody();
+      showToast('Hidden: ' + parsed.login, 'success');
     },
     true,
   );
@@ -467,5 +739,6 @@
   });
   obs.observe(document.documentElement, { childList: true, subtree: true });
 
+  ensureBlocklistPanelUi();
   scheduleApply();
 })();
