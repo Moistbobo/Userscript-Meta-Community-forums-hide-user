@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Meta Community Forums — Hide posts by user
 // @namespace    https://github.com/userscript-meta-forums-hide-post-from-user
-// @version      1.0.0
-// @description  Hide posts from users on your hidden-users list on Meta Community forums
+// @version      1.1.0
+// @description  Hide posts and Top Contributors entries from users on your hidden-users list on Meta Community forums
 // @match        https://communityforums.atmeta.com/*
 // @run-at       document-idle
 // @grant        GM_getValue
@@ -264,6 +264,36 @@
     return article;
   }
 
+  /**
+   * Sidebar/widgets use the same list item test id as thread messages, but rows without
+   * StandardMessageView (e.g. Top Contributors) are user-only rows we can hide by profile link.
+   * @param {HTMLElement} li
+   */
+  function getProfileLinkFromNonMessageListItem(li) {
+    var found = null;
+    li.querySelectorAll('a[data-testid="userLink"]').forEach(function (a) {
+      if (found) return;
+      if (!(a instanceof HTMLAnchorElement)) return;
+      if (!isProfileUserLink(a)) return;
+      found = a;
+    });
+    return found;
+  }
+
+  function applyContributorAndSidebarUserListHiding() {
+    var main = getMain();
+    if (!main) return;
+    main.querySelectorAll('li[data-testid="UnstyledList.ListItem"]').forEach(function (li) {
+      if (li.querySelector('article[data-testid="StandardMessageView"]')) return;
+      var link = getProfileLinkFromNonMessageListItem(li);
+      if (!link) return;
+      var parsed = parseProfileFromHref(link.getAttribute('href') || '');
+      if (!parsed) return;
+      if (!isBlocked(parsed.login, parsed.id)) return;
+      li.setAttribute(ATTR_HIDDEN, '1');
+    });
+  }
+
   function getMain() {
     return document.querySelector('main#main-content');
   }
@@ -367,6 +397,8 @@
       var root = getHideRoot(article);
       root.setAttribute(ATTR_HIDDEN, '1');
     });
+
+    applyContributorAndSidebarUserListHiding();
 
     augmentMessageActionMenusInMain();
   }
